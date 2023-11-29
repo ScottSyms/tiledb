@@ -3,21 +3,28 @@ import numpy as np
 import pandas as pd
 import uuid
 
-CREATE=False
+# Create the database
+CREATE=True
+
 # Specify the location to save the TileDB array
 array_uri = "ais"
-# Replace 'data.csv' with the path to your CSV file
+
+# csv to process.
+# This file should be in the proper projection
 file_path = 'large.csv'
 
-repeats=42
+# How many times to repeat the load of data.  Useful for testing.
+repeats=1
 
-
+# Create a fixed size array of UUIDs.  These can be used to track individual position reports.
 def create_fixed_size_uuid_array(size):
     return [str(uuid.uuid4()) for _ in range(size)]
 
 config=tiledb.Config()
-config["sm.memory_budget"] =50_000_000
-config["sm.memory_budget_var"] =50_000_000
+config["sm.memory_budget"] = 50_000_000
+config["sm.memory_budget_var"] = 50_000_000
+config["sm.tile_cache_size"] = 50_000_000
+config["py.init_buffer_bytes"] = 1024**2 * 50 * 14
 ctx = tiledb.Ctx(config)
 
 if CREATE:
@@ -25,10 +32,10 @@ if CREATE:
     # MMSI,BaseDateTime,LAT,LON,SOG,COG,Heading,VesselName,IMO,CallSign,VesselType,Status,Length,Width,Draft,Cargo
     schema = tiledb.ArraySchema(
         domain=tiledb.Domain(
-            tiledb.Dim(name="ts_pos_utc", domain=(np.datetime64('2010-01-01T00:00:00.000000'), np.datetime64('2038-01-01T00:00:00.000000')), tile=None, dtype="datetime64[ns]"),
+            # Define the dimensions of time, longitude and latitude.
+            tiledb.Dim(name="positiontime", domain=(np.datetime64('2010-01-01T00:00:00.000000'), np.datetime64('2038-01-01T00:00:00.000000')), tile=None, dtype="datetime64[ns]"),
             tiledb.Dim(name="longitude", domain=(-180.0, 180.0), tile=None, dtype="float32"),
             tiledb.Dim(name="latitude", domain=(-90.0, 90.0), tile=None, dtype="float32"),
-
         ), 
         attrs=[
             tiledb.Attr(name="sog", var=False, nullable=True, dtype="float32"),
@@ -49,7 +56,7 @@ if CREATE:
 
         sparse=True,
         cell_order='hilbert',
-        capacity=100000,
+        capacity=1_000_000,
         tile_order=None,
         allows_duplicates=True,
         )
@@ -61,22 +68,24 @@ if CREATE:
 
 
 # # Load the CSV file into a pandas DataFrame
-df = pd.read_csv(file_path,  parse_dates=['BaseDateTime'])
+# MMSI,BaseDateTime,LAT,LON,SOG,COG,Heading,VesselName,IMO,CallSign,VesselType,Status,Length,Width,Draft,Cargo
+df = pd.read_csv(file_path,  parse_dates=['BaseDateTime'], converters={ "SOG": pd.to_numeric, "COG": pd.to_numeric, "Heading": pd.to_numeric, "VesselType": pd.to_numeric, "Status": pd.to_numeric, "Length": pd.to_numeric, "Width": pd.to_numeric, "Draft": pd.to_numeric, "Cargo": pd.to_numeric})
+print("Size of data: ", len(df))
 df = df.rename(columns=str.lower)
 
-df.mmsi.fillna("",inplace=True)
-df.sog.fillna(-1,inplace=True)
-df.cog.fillna(-1,inplace=True)
-df.heading.fillna(-1,inplace=True)
-df.status.fillna(-1,inplace=True)
-df.length.fillna(-1,inplace=True)
-df.width.fillna(-1,inplace=True)
-df.draft.fillna(-1,inplace=True)
-df.cargo.fillna(-1,inplace=True)
-df.vesselname.fillna("",inplace=True)
-df.imo.fillna("",inplace=True)
-df.callsign.fillna("",inplace=True)
-df.vesseltype.fillna(-1,inplace=True)
+# df.mmsi.fillna("",inplace=True)
+# df.sog.fillna(-1,inplace=True)
+# df.cog.fillna(-1,inplace=True)
+# df.heading.fillna(-1,inplace=True)
+# df.status.fillna(-1,inplace=True)
+# df.length.fillna(-1,inplace=True)
+# df.width.fillna(-1,inplace=True)
+# df.draft.fillna(-1,inplace=True)
+# df.cargo.fillna(-1,inplace=True)
+# df.vesselname.fillna("",inplace=True)
+# df.imo.fillna("",inplace=True)
+# df.callsign.fillna("",inplace=True)
+# df.vesseltype.fillna(-1,inplace=True)
 
 # # Open the tiledb array and write the data
 with tiledb.open(array_uri, 'w', ctx=ctx) as A:
