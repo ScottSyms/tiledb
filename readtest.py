@@ -21,10 +21,12 @@ config["vfs.s3.scheme"] = "http"
 config["vfs.s3.region"] = ""
 config["vfs.s3.endpoint_override"] = "localhost:9000"
 config["vfs.s3.use_virtual_addressing"] = "false"
+config['vfs.s3.max_parallel_ops'] = 16
 ctx = tiledb.Ctx(config)
 
 f = tiledb.open(array_uri, "r", ctx=ctx)
 print(f.schema)
+tiledb.stats_enable()
 
 print("Looking for MMSI")
 start = time.time()
@@ -46,7 +48,7 @@ start = time.time()
 
 t = f.query(
     dims=["report_timestamp", "latitude", "longitude"],
-    attrs=["uuid"],
+    attrs=["mmsi", "uuid", "source"],
     cond=f"report_timestamp > {d1} and report_timestamp < {d2} ",
     return_arrow=False,
 
@@ -62,8 +64,8 @@ start = time.time()
 
 t = f.query(
     dims=["report_timestamp", "latitude", "longitude"],
-    attrs=["mmsi", "uuid"],
-    cond="uuid == '95e7feba-e43d-40d7-b48c-5b878dcc310d'",
+    attrs=["mmsi", "uuid", "source"],
+    cond=f"uuid == '43e76d98-53e4-464f-80eb-a2c0027eaac8' and report_timestamp > {d1} and report_timestamp < {d2}",
     return_arrow=False,
 
 ).df[:]
@@ -75,3 +77,5 @@ print(t[:5])
 
 # t=f.query(dims=['latitude']).df[:]
 # print(len(t), time.time() - start)
+
+# tiledb.stats_dump()

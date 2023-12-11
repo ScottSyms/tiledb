@@ -5,20 +5,27 @@ import uuid
 import random
 import csv
 import time
+
 # import os
 # import sys
 from pyarrow import csv
+import pandas as pd
 
-
-# os.environ["AWS_ACCESS_KEY_ID"] = "vh8wYUYFt1mQIaENBB3Y"
-# os.environ["AWS_SECRET_ACCESS_KEY"] = "Ow8RNtDA3TGfm3Hhg3icPGpIl6NNgMHBvJrDFChr"
-
-
-# Create the database
-CREATE = True
-
-# How long to wait after S3 operations
-AWS_WAIT=10
+# Configuration values
+########################################################################
+CREATE = True  # Create the database
+totalrows = 0  # Total number of rows
+AWS_WAIT = 10  # How long to wait after S3 operations
+backend = "MINIO"  # Backend is either FILE, MINIO or AWS
+repeats = 1  # How many times to repeat the load of data.  Useful for testing.
+source_array = [
+    "source1",
+    "source2",
+    "source3",
+    "source4",
+    "source5",
+    "source6",
+]  # Array of fictitious sources
 
 # Specify the location to save the TileDB array
 
@@ -27,60 +34,66 @@ AWS_WAIT=10
 
 # Array for local minio instance; URL and port is stored in the configuration context.
 array_uri = "s3://ais/marinecadastre"
+array_uri = "s3://ais/test"
 
 # csv to process.
 # This file should be in the proper projection
 file_path = "small.csv"
 
-# How many times to repeat the load of data.  Useful for testing.
-repeats = 1
 
-# array of sources
-source_array = ["source1", "source2", "source3", "source4", "source5", "source6"]
+# Context configuration of
+########################################################################
+config = tiledb.Config()
+config[
+    "sm.check_coord_oob"
+] = False  # don't check to see if values are in the dimensional range
+config["py.init_buffer_bytes"] = 1024**2 * 50 * 14
 
-# Create a fixed size array of random selections from a pool of strings
+if backend == "MINIO":
+    # Constants
+    array_uri = "s3://ais/marinecadastre"
+    array_bucket = "s3://ais"
+
+    # Settings for storing the data in a local installation of Minio
+    config["vfs.s3.scheme"] = "http"
+    config["vfs.s3.region"] = ""
+    config["vfs.s3.endpoint_override"] = "localhost:9000"
+    config["vfs.s3.use_virtual_addressing"] = "false"
+    config["vfs.s3.aws_access_key_id"] = "vh8wYUYFt1mQIaENBB3Y"
+    config["vfs.s3.aws_secret_access_key"] = "Ow8RNtDA3TGfm3Hhg3icPGpIl6NNgMHBvJrDFChr"
+
+config_ctx = tiledb.Ctx(config)  # Wrap the configuration into a context
+vfs = tiledb.VFS(ctx=config_ctx)  # Create a virtual filesystem object
+
+
+
+
+# Functions
+################################################################
+# Create a fixed size array of random selections from a pool of source strings
 def create_source_array(size):
     global source_array
     return [random.choice(source_array) for _ in range(size)]
+
 
 # Create a fixed size array of UUIDs.  These can be used to track individual position reports.
 def create_uuid_array(size):
     return [str(uuid.uuid4()) for _ in range(size)]
 
+def get_data(input_data_file):
+    # Read the CSV file
+    df = pd.read_csv(input_data_file, engine="pyarrow")
 
-# Configuration parameters for Minio tiledb context
-minio_cfg = tiledb.Config()
-minio_cfg["sm.check_coord_oob"] = False  # don't check to see if values are in the dimensional range
-minio_cfg["sm.memory_budget"] = 50_000_000
-minio_cfg["sm.memory_budget_var"] = 50_000_000
-minio_cfg["sm.tile_cache_size"] = 50_000_000
-minio_cfg["py.init_buffer_bytes"] = 1024**2 * 50 * 14
+    # convert column headings to lower case
+    return df.rename(columns=str.lower)
 
-# Settings for storing the data in a local installation of Minio
-minio_cfg["vfs.s3.scheme"] = "http"
-minio_cfg["vfs.s3.region"] = ""
-minio_cfg["vfs.s3.endpoint_override"] = "localhost:9000"
-minio_cfg["vfs.s3.use_virtual_addressing"] = "false"
-minio_cfg["vfs.s3.aws_access_key_id"] = "vh8wYUYFt1mQIaENBB3Y"
-minio_cfg["vfs.s3.aws_secret_access_key"] = "Ow8RNtDA3TGfm3Hhg3icPGpIl6NNgMHBvJrDFChr"
-
-
-# Wrap the configuration into a context
-minio_ctx = tiledb.Ctx(minio_cfg)
-
-# Create a virtual filesystem object
-vfs = tiledb.VFS(ctx=minio_ctx)
-
-if CREATE:
-    # Is the bucket empty and created?
-    if vfs.is_bucket("s3://ais"):
-        print("Deleting existing bucket")
-        vfs.remove_bucket("s3://ais")
-        time.sleep(AWS_WAIT)
-
-    print("Creating  bucket")
-    vfs.create_bucket("s3://ais")
-    time.sleep(AWS_WAIT)
+def create_db():
+    if backend == "MINIO":
+        # Is the bucket empty and created?
+        if not vfs.is_bucket(array_bucket):
+            print("Creating bucket and waiting for", AWS_WAIT, " seconds.")
+            vfs.create_bucket(array_bucket)
+            time.sleep(AWS_WAIT)
 
     # Create a filter list
     filter_list = tiledb.FilterList(
@@ -216,32 +229,34 @@ if CREATE:
     )
 
     # # Create the sparse array
-    tiledb.SparseArray.create(array_uri, schema, ctx=minio_ctx)
+    tiledb.SparseArray.create(array_uri, schema, ctx=config_ctx)
 
-# Read the CSV file
-df = csv.read_csv("large.csv").to_pandas()
+def submit_data(df):
+    # Open the tiledb array and write the data arrays
+    with tiledb.open(array_uri, "w", ctx=config_ctx) as A:
+        for j in range(0, repeats):
+            A[df.basedatetime, df.lon, df.lat] = {
+                "sog": df.sog,
+                "cog": df.cog,
+                "heading": df.heading,
+                "vesselname": df.vesselname,
+                "imo": df.imo,
+                "callsign": df.callsign,
+                "vesseltype": df.vesseltype,
+                "status": df.status,
+                "length": df.length,
+                "width": df.width,
+                "draft": df.draft,
+                "cargo": df.cargo,
+                "mmsi": df.mmsi,
+                "uuid": create_uuid_array(df.shape[0]),
+                "source": create_source_array(df.shape[0]),
+            }
 
-# convert column headings to lower case
-df = df.rename(columns=str.lower)
+if __name__ == "__main__":
+    create_db()
+    df=get_data('small.csv')
+    submit_data(df)
 
-# Open the tiledb array and write the data arrays
-with tiledb.open(array_uri, "w", ctx=minio_ctx) as A:
-    for j in range(0, repeats):
-        print("This is the", j + 1, "insert run.")
-        A[df.basedatetime, df.lon, df.lat] = {
-            "sog": df.sog,
-            "cog": df.cog,
-            "heading": df.heading,
-            "vesselname": df.vesselname,
-            "imo": df.imo,
-            "callsign": df.callsign,
-            "vesseltype": df.vesseltype,
-            "status": df.status,
-            "length": df.length,
-            "width": df.width,
-            "draft": df.draft,
-            "cargo": df.cargo,
-            "mmsi": df.mmsi,
-            "uuid": create_uuid_array(df.shape[0]),
-            "source": create_source_array(df.shape[0]),
-        }
+
+
